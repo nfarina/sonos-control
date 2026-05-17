@@ -50,11 +50,11 @@ struct SonosControlApp: App {
     }
 
     /// Always render the hifispeaker — state is conveyed by tint:
-    ///   • not loaded yet → secondary (greyed out)
+    ///   • not loaded yet or offline → secondary (greyed out)
     ///   • playing → vibrant blue
     ///   • paused / stopped → primary (black / white per appearance)
     private var menuIconColor: Color {
-        if !sonos.hasLoadedState { return .secondary }
+        if !sonos.hasLoadedState || sonos.isOffline { return .secondary }
         if sonos.isPlaying { return Color(red: 0.05, green: 0.35, blue: 0.85) }
         return .primary
     }

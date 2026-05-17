@@ -41,6 +41,11 @@ class SonosManager: ObservableObject {
     /// freshness indicator in the popup.
     @Published private(set) var lastPolledAt: Date?
 
+    /// True after 3 consecutive failed polls — typically means we're off the
+    /// home network or the speakers are unreachable. Drives the menu bar
+    /// icon's grey "offline" state.
+    @Published private(set) var isOffline: Bool = false
+
     var isPlaying: Bool { nowPlaying.transportState.isPlaying }
 
     /// The Downstairs device (primary). Nil until first discovery.
@@ -70,6 +75,8 @@ class SonosManager: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var errorClearTask: Task<Void, Never>?
     private var isMenuVisible = false
+    private var consecutiveFailures = 0
+    private let offlineThreshold = 3
     /// Fast cadence while the menu is open (so transitions feel snappy).
     private let foregroundInterval: TimeInterval = 3.0
     /// Slow cadence while the menu is closed (just keeps history fresh).
@@ -222,6 +229,8 @@ class SonosManager: ObservableObject {
             self.nowPlaying = np
             self.hasLoadedState = true
             self.lastPolledAt = Date()
+            self.consecutiveFailures = 0
+            if self.isOffline { self.isOffline = false }
             // Only add to history if this looks like a real track:
             //   - we have an artist (rules out station-name placeholders)
             //   - title is non-empty
@@ -232,6 +241,11 @@ class SonosManager: ObservableObject {
             }
         } catch {
             logDebug("refreshNowPlaying: \(error)")
+            consecutiveFailures += 1
+            if consecutiveFailures >= offlineThreshold && !isOffline {
+                isOffline = true
+                logInfo("Marking system as offline after \(consecutiveFailures) failed polls")
+            }
         }
     }
 
