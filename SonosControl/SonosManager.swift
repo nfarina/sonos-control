@@ -69,7 +69,11 @@ class SonosManager: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var errorClearTask: Task<Void, Never>?
-    private let pollInterval: TimeInterval = 3.0
+    private var isMenuVisible = false
+    /// Fast cadence while the menu is open (so transitions feel snappy).
+    private let foregroundInterval: TimeInterval = 3.0
+    /// Slow cadence while the menu is closed (just keeps history fresh).
+    private let backgroundInterval: TimeInterval = 10.0
     private let historyLimit = 10
 
     /// Set an error message that fades on its own after a few seconds. Pass
@@ -88,7 +92,14 @@ class SonosManager: ObservableObject {
 
     init() {
         loadHistory()
-        Task { await refreshTopology() }
+        Task {
+            await refreshTopology()
+            // Kick off the background poll loop. It runs forever at the
+            // slow cadence, switching to fast when the menu is visible.
+            // History capture happens inside refreshNowPlaying() so we keep
+            // recording songs even with the menu closed.
+            startBackgroundPolling()
+        }
 
         // Listen for the global play/pause hotkey.
         NotificationCenter.default.addObserver(
@@ -100,6 +111,11 @@ class SonosManager: ObservableObject {
                 await self?.togglePlayPause()
             }
         }
+    }
+
+    deinit {
+        pollTask?.cancel()
+        errorClearTask?.cancel()
     }
 
     // MARK: - Discovery & topology
@@ -162,22 +178,40 @@ class SonosManager: ObservableObject {
 
     // MARK: - Polling
 
-    /// Begin polling now-playing + volume. Call from MenuBarView.onAppear so we
-    /// only poll while the menu is visible.
-    func startPolling() {
+    /// Single long-lived poll loop. Always polls now-playing (so history
+    /// keeps building when the menu is closed); only polls volume when the
+    /// menu is visible (no one's looking at it otherwise). Interval depends
+    /// on visibility.
+    private func startBackgroundPolling() {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshNowPlaying()
-                await self?.refreshVolume()
-                try? await Task.sleep(nanoseconds: UInt64((self?.pollInterval ?? 3.0) * 1_000_000_000))
+                if self?.isMenuVisible == true {
+                    await self?.refreshVolume()
+                }
+                let interval = self?.isMenuVisible == true
+                    ? self?.foregroundInterval ?? 3.0
+                    : self?.backgroundInterval ?? 10.0
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
     }
 
+    /// Called when the menu opens. Triggers an immediate refresh so the UI
+    /// shows current state without waiting for the next tick.
+    func startPolling() {
+        isMenuVisible = true
+        Task {
+            await refreshNowPlaying()
+            await refreshVolume()
+        }
+    }
+
+    /// Called when the menu closes. Polling continues at the slower
+    /// background cadence.
     func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
+        isMenuVisible = false
     }
 
     func refreshNowPlaying() async {
