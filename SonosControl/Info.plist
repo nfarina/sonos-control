@@ -36,7 +36,7 @@
 	<key>SUFeedURL</key>
 	<string>https://nfarina.github.io/sonos-control/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>pDCTgcclFkanb2zhm+e9GO6KYyHcOrSoLxC4kDoGd2k=</string>
+	<string>8AA3nqpj/CTIjugAWSv17vI4gAyGdCjcRVRfrQAFk1Y=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 </dict>
