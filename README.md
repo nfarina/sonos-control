@@ -1,3 +1,5 @@
+<img width="300" height="300" alt="Sonos Control" src="https://github.com/user-attachments/assets/79b0a36f-0ad2-41d8-8da8-f93aef9d5407" />
+
 # Sonos Control
 
 A minimal, fast Sonos controller for macOS — lives in the menu bar, opens
@@ -8,7 +10,7 @@ volume, pick a station) without the slow startup or requiring Rosetta.
 
 There are many Sonos apps out there. This is mine.
 
-![Screenshot](docs/screenshot.png)
+<img width="398" height="418" alt="Sonos Control App" src="https://github.com/user-attachments/assets/ede4c685-f2c9-4f3e-a157-55261bad8a93" />
 
 ## Install
 
