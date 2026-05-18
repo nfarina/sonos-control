@@ -8,6 +8,16 @@ volume, pick a station) without the slow startup or universal-binary headache.
 
 ![Screenshot](docs/screenshot.png)
 
+## Install
+
+Download the latest release from
+[**GitHub Releases**](https://github.com/nfarina/SonosControl/releases/latest),
+unzip, and drag `Sonos Control.app` to `/Applications`. macOS will prompt for
+**Local Network** access the first time you launch — grant it so the app can
+discover your Sonos speakers.
+
+Auto-updates are handled via [Sparkle](https://sparkle-project.org/).
+
 ## Features
 
 - **Menu bar app, no dock icon.** Opens in ~50ms, gets out of your way.
@@ -19,7 +29,7 @@ volume, pick a station) without the slow startup or universal-binary headache.
 - **Global hotkey.** Default `F8` for play/pause from anywhere. Fully customizable.
 - **In-menu shortcuts.** `⌘P` play/pause, `⌘=` / `⌘−` volume. All customizable.
 - **Offline-aware.** Icon greys out when off the home network.
-- **Auto-updates** via [Sparkle](https://sparkle-project.org/).
+- **Auto-updates** via Sparkle.
 
 ## How it works
 
@@ -32,29 +42,54 @@ Players are discovered via SSDP (`M-SEARCH` to `239.255.255.250:1900`) on
 launch. After discovery the app caches IPs and polls now-playing every 10s in
 the background, 3s while the menu is open.
 
-## Build & install
+## Notes
+
+### F8 and the system media keys
+
+macOS routes the hardware F8 media key to the system media player (Music.app)
+by default. There are two ways to make F8 trigger Sonos Control instead:
+
+- Press **Fn + F8** — this is the easiest path; it works without changing any
+  system settings.
+- Or enable **System Settings → Keyboard → "Use F1, F2, etc. keys as standard
+  function keys"** to make F8 always go to apps (which means your hardware
+  media keys no longer control Music.app).
+
+If you'd rather not deal with either, you can rebind the hotkey to anything
+else in Settings → Shortcuts. `⌃⌥⌘P` is a popular alternative.
+
+### Sandbox is off
+
+SSDP multicast requires unsandboxed networking, so `ENABLE_APP_SANDBOX = NO`.
+The Sparkle framework is signed with hardened runtime. The app has no
+filesystem access beyond `~/Library/Application Support/SonosControl/` (logs).
+
+### Limitations
+
+- No multi-room source switching (each group plays one source — the primary).
+- No queue management UI (favorites/streams replace the queue when picked).
+- No search.
+- No iOS/iPad version.
+
+By design — this is a 99%-case controller, not a full Sonos app.
+
+## Building locally
 
 Requirements: Xcode 16.2+ (macOS 14+).
 
-### Quick install (no signing setup needed)
-
-Open `SonosControl.xcodeproj` in Xcode and ⌘R. The app appears in your menu
-bar. macOS may prompt for **Local Network** access on first launch — grant it
-so SSDP discovery works.
-
-### Install to `/Applications` (signed)
+Open `SonosControl.xcodeproj` in Xcode and ⌘R to run a Debug build, or:
 
 ```bash
+# Build in Release, sign with your Developer ID, install to /Applications.
 ./Scripts/local-install-app.sh
 ```
 
-This builds in Release, signs with your Developer ID, and installs to
-`/Applications/Sonos Control.app`. Requires a Developer ID Application
-certificate in your login keychain.
+Requires a Developer ID Application certificate in your login keychain.
 
-### Forking this for yourself
+### Forking
 
-Replace these before building:
+If you want to publish your own builds (with your own update feed), replace
+these before building:
 
 | File | Setting | What to change |
 |---|---|---|
@@ -67,7 +102,7 @@ Replace these before building:
 If you don't plan to publish updates, blank out `SUPublicEDKey` and Sparkle
 will just sit quietly.
 
-## Releasing
+### Releasing
 
 ```bash
 # Build, sign, notarize, staple → dist/SonosControl-<version>-macos.zip
@@ -84,32 +119,6 @@ Requires:
 - Sparkle key pair generated via `generate_keys` and stored in your keychain
   under the `SPARKLE_KEY_ACCOUNT` from `sparkle-config.sh`
 - GitHub Pages enabled on your fork, serving from `main/docs`
-
-## Notes
-
-### F8 + system media keys
-
-macOS owns the hardware F8 media key by default — it routes to the system
-media player (Music.app). For `F8` to reach Sonos Control, enable **System
-Settings → Keyboard → "Use F1, F2, etc. keys as standard function keys"**.
-
-If you'd rather keep F8 as the system media key, you can rebind to anything
-else in Settings → Shortcuts. `⌃⌥⌘P` is a good alternative.
-
-### Sandbox is off
-
-SSDP multicast requires unsandboxed networking, so `ENABLE_APP_SANDBOX = NO`.
-The Sparkle framework is signed with hardened runtime. The app has no
-filesystem access beyond `~/Library/Application Support/SonosControl/` (logs).
-
-### Limitations
-
-- No multi-room source switching (each group plays one source — the primary).
-- No queue management UI (favorites/streams replace the queue when picked).
-- No search.
-- No iOS/iPad version.
-
-By design — this is a 99%-case controller, not a full Sonos app.
 
 ## License
 
