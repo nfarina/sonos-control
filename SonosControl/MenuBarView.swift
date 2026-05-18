@@ -14,6 +14,8 @@ func openInAppleMusic(artist: String, title: String) {
 
 struct MenuBarView: View {
     @ObservedObject var sonos: SonosManager
+    /// Provided by SonosControlApp — opens the custom Settings NSWindow.
+    let openSettings: () -> Void
 
     @State private var showingHistory = false
     @State private var showingFavorites = false
@@ -21,16 +23,15 @@ struct MenuBarView: View {
     var body: some View {
         VStack(spacing: 10) {
             topBar
+            if sonos.primaryZoneName.isEmpty {
+                FirstLaunchPrompt(openSettings: openSettings)
+            }
             NowPlayingCard(sonos: sonos)
             VolumeCard(sonos: sonos)
             SystemCard(sonos: sonos)
         }
         .padding(12)
         .frame(width: 340)
-        // Hidden buttons that exist solely to host keyboard shortcuts.
-        // Placed in `.background` so they don't contribute to the VStack
-        // layout (otherwise they add a row of spacing at the bottom).
-        .background(keyboardShortcutHosts)
         .onAppear {
             sonos.startPolling()
             Task { await sonos.refreshNowPlaying() }
@@ -46,28 +47,9 @@ struct MenuBarView: View {
         }
     }
 
-    /// Invisible buttons that capture ⌘+ and ⌘- volume shortcuts. The
-    /// play/pause shortcut is attached directly to its visible button in
-    /// TransportControls. Two buttons for volume-up to handle both `⌘=`
-    /// (literal) and `⌘+` (shifted variant — same physical key on US layouts).
-    private var keyboardShortcutHosts: some View {
-        Group {
-            Button("Volume Up") {
-                Task { await sonos.setVolume(min(100, sonos.volume + 2)) }
-            }
-            .keyboardShortcut("=", modifiers: .command)
-            Button("Volume Up Shifted") {
-                Task { await sonos.setVolume(min(100, sonos.volume + 2)) }
-            }
-            .keyboardShortcut("+", modifiers: .command)
-            Button("Volume Down") {
-                Task { await sonos.setVolume(max(0, sonos.volume - 2)) }
-            }
-            .keyboardShortcut("-", modifiers: .command)
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0)
-    }
+    // Keyboard shortcuts (Cmd+P, Cmd+=, Cmd+−) are dispatched by HotkeyManager
+    // via NSEvent.addLocalMonitorForEvents and routed through the SonosManager
+    // notification subscriptions. No SwiftUI .keyboardShortcut bindings needed.
 
     private var topBar: some View {
         HStack(spacing: 14) {
@@ -87,17 +69,11 @@ struct MenuBarView: View {
             }
             .help("Recently played")
 
-            Button {
-                Task { await sonos.refreshTopology() }
-            } label: {
-                if sonos.isDiscovering {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .imageScale(.medium)
-                }
+            if sonos.isDiscovering {
+                ProgressView()
+                    .controlSize(.small)
+                    .help("Discovering zones")
             }
-            .help("Refresh")
 
             FreshnessIndicator(sonos: sonos)
 
@@ -112,6 +88,9 @@ struct MenuBarView: View {
             }
 
             Menu {
+                Button("Settings…") { openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+                Divider()
                 Button("Open Log File") { Logger.shared.openLogFile() }
                 Divider()
                 Button("Quit Sonos Control") { NSApplication.shared.terminate(nil) }
@@ -125,6 +104,35 @@ struct MenuBarView: View {
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 4)
+    }
+}
+
+// MARK: - First launch prompt
+
+/// Shown at the top of the menu when no primary zone has been configured.
+/// Uses SettingsLink so a single click takes the user to General settings to
+/// pick their primary zone.
+private struct FirstLaunchPrompt: View {
+    let openSettings: () -> Void
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Welcome to Sonos Control")
+                    .font(.subheadline.weight(.semibold))
+                Text("Pick a primary zone in Settings to get started.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    openSettings()
+                } label: {
+                    Label("Open Settings", systemImage: "gear")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.regular)
+            }
+        }
     }
 }
 
@@ -265,8 +273,7 @@ private struct TransportControls: View {
                 Image(systemName: sonos.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 26, weight: .semibold))
             }
-            .keyboardShortcut("p", modifiers: .command)
-            .help("Play/Pause (⌘P)")
+            .help("Play/Pause")
 
             Button {
                 Task { await sonos.next() }
@@ -390,26 +397,17 @@ private struct SystemCard: View {
                         toggle: {}
                     )
                 } else {
-                    Text("No primary zone found")
+                    Text("No zones discovered yet")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                if let backPorch = sonos.backPorch {
+                ForEach(sonos.satellites) { device in
                     ZoneRow(
-                        device: backPorch,
+                        device: device,
                         isPrimary: false,
-                        isOn: sonos.isGrouped(backPorch),
-                        toggle: { Task { await sonos.toggleSatellite(backPorch) } }
-                    )
-                }
-
-                if let frontPorch = sonos.frontPorch {
-                    ZoneRow(
-                        device: frontPorch,
-                        isPrimary: false,
-                        isOn: sonos.isGrouped(frontPorch),
-                        toggle: { Task { await sonos.toggleSatellite(frontPorch) } }
+                        isOn: sonos.isGrouped(device),
+                        toggle: { Task { await sonos.toggleSatellite(device) } }
                     )
                 }
             }

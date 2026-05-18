@@ -38,6 +38,31 @@ remove_signature_if_present() {
   fi
 }
 
+sign_with_runtime() {
+  local target="$1"
+  remove_signature_if_present "${target}"
+  codesign --force --options runtime --timestamp --sign "${SIGNING_IDENTITY}" "${target}"
+}
+
+sign_sparkle_support_binaries() {
+  local app_bundle_path="$1"
+  local framework_path="${app_bundle_path}/Contents/Frameworks/Sparkle.framework"
+  local version_path="${framework_path}/Versions/B"
+  [ -d "${framework_path}" ] || return 0
+
+  local updater_app="${version_path}/Updater.app"
+  local downloader_xpc="${version_path}/XPCServices/Downloader.xpc"
+  local installer_xpc="${version_path}/XPCServices/Installer.xpc"
+  local autoupdate_binary="${version_path}/Autoupdate"
+
+  [ -e "${autoupdate_binary}" ] && sign_with_runtime "${autoupdate_binary}"
+  for nested_bundle in "${downloader_xpc}" "${installer_xpc}" "${updater_app}"; do
+    [ -d "${nested_bundle}" ] && sign_with_runtime "${nested_bundle}"
+  done
+  sign_with_runtime "${version_path}"
+  sign_with_runtime "${framework_path}"
+}
+
 BUILD_CMD=(xcodebuild
   -scheme "${SCHEME}"
   -configuration "${CONFIGURATION}"
@@ -61,6 +86,8 @@ if [ ! -d "${APP_PATH}" ]; then
 fi
 
 echo "Signing with Developer ID…"
+sign_sparkle_support_binaries "${APP_PATH}"
+
 APP_EXECUTABLE_PATH="${APP_PATH}/Contents/MacOS/${SCHEME}"
 remove_signature_if_present "${APP_EXECUTABLE_PATH}"
 codesign --force --options runtime --timestamp \

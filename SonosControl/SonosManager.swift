@@ -17,9 +17,18 @@ class SonosManager: ObservableObject {
     // MARK: - Configurable zone names
     // Persisted to UserDefaults so they can be tweaked in settings later.
 
-    @AppStorage("zone.primary")    var primaryZoneName: String = "Downstairs"
-    @AppStorage("zone.backPorch")  var backPorchZoneName: String = "Back Porch"
-    @AppStorage("zone.frontPorch") var frontPorchZoneName: String = "Front Porch"
+    /// Name of the zone that volume and transport target. If empty (first
+    /// launch), the first discovered zone is auto-selected.
+    @AppStorage("zone.primary") var primaryZoneName: String = ""
+
+    /// UUIDs of zones the user has chosen to hide from the System card
+    /// (comma-separated for AppStorage compatibility). Empty = show all.
+    @AppStorage("zone.hiddenUUIDs") private var hiddenUUIDsRaw: String = ""
+
+    var hiddenZoneUUIDs: Set<String> {
+        get { Set(hiddenUUIDsRaw.split(separator: ",").map(String.init)) }
+        set { hiddenUUIDsRaw = newValue.sorted().joined(separator: ",") }
+    }
 
     // MARK: - Published state
 
@@ -48,17 +57,24 @@ class SonosManager: ObservableObject {
 
     var isPlaying: Bool { nowPlaying.transportState.isPlaying }
 
-    /// The Downstairs device (primary). Nil until first discovery.
+    /// The user-designated primary zone (volume/transport target). Falls back
+    /// to the first discovered device if the configured name isn't found —
+    /// avoids a totally-broken state when zones get renamed.
     var primary: SonosDevice? {
-        devices.first { $0.zoneName.caseInsensitiveCompare(primaryZoneName) == .orderedSame }
+        if !primaryZoneName.isEmpty,
+           let match = devices.first(where: { $0.zoneName.caseInsensitiveCompare(primaryZoneName) == .orderedSame }) {
+            return match
+        }
+        return devices.first
     }
 
-    var backPorch: SonosDevice? {
-        devices.first { $0.zoneName.caseInsensitiveCompare(backPorchZoneName) == .orderedSame }
-    }
-
-    var frontPorch: SonosDevice? {
-        devices.first { $0.zoneName.caseInsensitiveCompare(frontPorchZoneName) == .orderedSame }
+    /// All discovered zones except the primary, filtered by the user's hidden
+    /// list. These are what show up as toggleable satellites in the System card.
+    var satellites: [SonosDevice] {
+        let hidden = hiddenZoneUUIDs
+        let primaryUUID = primary?.uuid
+        return devices.filter { $0.uuid != primaryUUID && !hidden.contains($0.uuid) }
+            .sorted { $0.zoneName.localizedCaseInsensitiveCompare($1.zoneName) == .orderedAscending }
     }
 
     /// True if the given device is currently grouped with the primary.
@@ -108,14 +124,25 @@ class SonosManager: ObservableObject {
             startBackgroundPolling()
         }
 
-        // Listen for the global play/pause hotkey.
-        NotificationCenter.default.addObserver(
-            forName: HotkeyManager.playPauseNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
+        // Subscribe to every hotkey action — both global (Carbon) and in-app
+        // (local NSEvent monitor) bindings post the same notifications.
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: HotkeyAction.globalPlayPause.notificationName, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.togglePlayPause() }
+        }
+        nc.addObserver(forName: HotkeyAction.inAppPlayPause.notificationName, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.togglePlayPause() }
+        }
+        nc.addObserver(forName: HotkeyAction.inAppVolumeUp.notificationName, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.togglePlayPause()
+                guard let self else { return }
+                await self.setVolume(min(100, self.volume + 2))
+            }
+        }
+        nc.addObserver(forName: HotkeyAction.inAppVolumeDown.notificationName, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.setVolume(max(0, self.volume - 2))
             }
         }
     }
@@ -164,6 +191,12 @@ class SonosManager: ObservableObject {
             self.devices = parsed.devices
             self.groups = parsed.groups
             showError(nil)
+            // First-launch convenience: auto-pick a primary if none configured
+            // yet. The user can change it in Settings.
+            if primaryZoneName.isEmpty, let first = parsed.devices.first {
+                primaryZoneName = first.zoneName
+                logInfo("Auto-selected '\(first.zoneName)' as primary zone (first launch)")
+            }
             logInfo("Topology: \(parsed.devices.count) devices, \(parsed.groups.count) groups")
             for d in parsed.devices {
                 logDebug("  • \(d.zoneName) [\(d.uuid)] @ \(d.host) (\(d.modelName))")

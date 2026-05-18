@@ -1,16 +1,38 @@
 import SwiftUI
 import Cocoa
+import Sparkle
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    lazy var updaterController = SPUStandardUpdaterController(
+        startingUpdater: false,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
+
+    /// Set by SonosControlApp after init so the coordinator can build the
+    /// Settings view with the right state objects.
+    var settingsContentFactory: (@MainActor (SettingsTabSelection) -> NSView)?
+
+    lazy var settingsCoordinator: SettingsWindowCoordinator = {
+        SettingsWindowCoordinator(makeContentView: { [weak self] selection in
+            self?.settingsContentFactory?(selection) ?? NSView()
+        })
+    }()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         logInfo("Application did finish launching")
         if NSApp.isActive {
             NSApp.deactivate()
         }
+        updaterController.startUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         logInfo("Application will terminate")
+    }
+
+    @objc func showSettings() {
+        settingsCoordinator.show()
     }
 }
 
@@ -34,12 +56,26 @@ struct SonosControlApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(sonos: sonos)
+            MenuBarView(sonos: sonos, openSettings: { appDelegate.showSettings() })
+                .onAppear {
+                    // Wire the factory once; the coordinator will call it lazily
+                    // on first Settings open.
+                    if appDelegate.settingsContentFactory == nil {
+                        appDelegate.settingsContentFactory = { [sonos, hotkeys, appDelegate] selection in
+                            NSHostingView(rootView: SettingsView(
+                                sonos: sonos,
+                                hotkeys: hotkeys,
+                                updater: appDelegate.updaterController.updater,
+                                selection: selection
+                            ))
+                        }
+                    }
+                }
         } label: {
             Image(systemName: "hifispeaker.fill")
                 // `.original` disables the default template behavior so our
-                // foregroundStyle actually takes effect (otherwise macOS would
-                // force monochrome menubar tinting).
+                // foregroundStyle actually takes effect (otherwise macOS
+                // would force monochrome menubar tinting).
                 .renderingMode(.original)
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(menuIconColor)

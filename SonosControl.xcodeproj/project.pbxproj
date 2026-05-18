@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		0149D1F02FBA0F2000A4EBBD /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 0149D1F12FBA0F2000A4EBBD /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		0149D1BE2FBA0F1900A4EBBD /* SonosControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SonosControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0149D1F02FBA0F2000A4EBBD /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = SonosControl;
 			packageProductDependencies = (
+				0149D1F12FBA0F2000A4EBBD /* Sparkle */,
 			);
 			productName = SonosControl;
 			productReference = 0149D1BE2FBA0F1900A4EBBD /* SonosControl.app */;
@@ -107,6 +113,9 @@
 			);
 			mainGroup = 0149D1B52FBA0F1900A4EBBD;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				0149D1F22FBA0F2000A4EBBD /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0149D1BF2FBA0F1900A4EBBD /* Products */;
 			projectDirPath = "";
@@ -340,6 +349,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		0149D1F22FBA0F2000A4EBBD /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0149D1F12FBA0F2000A4EBBD /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0149D1F22FBA0F2000A4EBBD /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0149D1B62FBA0F1900A4EBBD /* Project object */;
 }
