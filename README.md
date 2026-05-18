@@ -4,7 +4,9 @@ A minimal, fast Sonos controller for macOS — lives in the menu bar, opens
 instantly, plays/pauses your zone in a single click.
 
 Built to replace the official Sonos desktop app for the 99% case (play, pause,
-volume, pick a station) without the slow startup or universal-binary headache.
+volume, pick a station) without the slow startup or requiring Rosetta.
+
+There are many Sonos apps out there. This is mine.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -43,20 +45,6 @@ launch. After discovery the app caches IPs and polls now-playing every 10s in
 the background, 3s while the menu is open.
 
 ## Notes
-
-### F8 and the system media keys
-
-macOS routes the hardware F8 media key to the system media player (Music.app)
-by default. There are two ways to make F8 trigger Sonos Control instead:
-
-- Press **Fn + F8** — this is the easiest path; it works without changing any
-  system settings.
-- Or enable **System Settings → Keyboard → "Use F1, F2, etc. keys as standard
-  function keys"** to make F8 always go to apps (which means your hardware
-  media keys no longer control Music.app).
-
-If you'd rather not deal with either, you can rebind the hotkey to anything
-else in Settings → Shortcuts. `⌃⌥⌘P` is a popular alternative.
 
 ### Sandbox is off
 
