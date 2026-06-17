@@ -5,7 +5,7 @@ import Combine
 /// Identifies a Settings tab. Drives both the NSToolbar and the SwiftUI
 /// content view that swaps based on selection.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, shortcuts, updates, about
+    case general, shortcuts, lyrics, updates, about
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general:   return "General"
         case .shortcuts: return "Shortcuts"
+        case .lyrics:    return "Lyrics"
         case .updates:   return "Updates"
         case .about:     return "About"
         }
@@ -22,6 +23,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general:   return "gear"
         case .shortcuts: return "keyboard"
+        case .lyrics:    return "text.quote"
         case .updates:   return "arrow.triangle.2.circlepath"
         case .about:     return "info.circle"
         }

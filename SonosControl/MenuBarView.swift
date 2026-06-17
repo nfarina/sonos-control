@@ -19,6 +19,10 @@ struct MenuBarView: View {
 
     @State private var showingHistory = false
     @State private var showingFavorites = false
+    /// Persisted across menu open/close so the lyrics panel stays where the
+    /// user left it. Lyrics are only fetched while this panel is actually on
+    /// screen (i.e. menu open + toggle on).
+    @AppStorage("lyrics.panelVisible") private var showLyricsPanel = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -27,8 +31,10 @@ struct MenuBarView: View {
                 FirstLaunchPrompt(openSettings: openSettings)
             }
             NowPlayingCard(sonos: sonos)
-            VolumeCard(sonos: sonos)
             SystemCard(sonos: sonos)
+            if showLyricsPanel {
+                LyricsCard(sonos: sonos)
+            }
         }
         .padding(12)
         .frame(width: 340)
@@ -68,6 +74,15 @@ struct MenuBarView: View {
                     .imageScale(.medium)
             }
             .help("Recently played")
+
+            Button {
+                showLyricsPanel.toggle()
+            } label: {
+                Image(systemName: "text.quote")
+                    .imageScale(.medium)
+                    .foregroundStyle(showLyricsPanel ? Color.accentColor : Color.primary)
+            }
+            .help(showLyricsPanel ? "Hide lyrics" : "Show lyrics")
 
             if sonos.isDiscovering {
                 ProgressView()
@@ -317,85 +332,20 @@ private struct PositionBar: View {
     }
 }
 
-// MARK: - Volume card
-
-private struct VolumeCard: View {
-    @ObservedObject var sonos: SonosManager
-    @State private var localVolume: Double = 30
-    @State private var dragging = false
-    @State private var pendingSend: Task<Void, Never>?
-
-    var body: some View {
-        Card {
-            VStack(spacing: 6) {
-                HStack {
-                    Text("Volume")
-                        .font(.subheadline.weight(.medium))
-                    Spacer()
-                    Text("\(Int(localVolume))%")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                HStack(spacing: 8) {
-                    Image(systemName: "speaker.fill")
-                        .foregroundStyle(.secondary)
-                    Slider(
-                        value: $localVolume,
-                        in: 0...100,
-                        onEditingChanged: { editing in
-                            dragging = editing
-                            if !editing {
-                                // Final value when drag ends — always send.
-                                pendingSend?.cancel()
-                                Task { await sonos.setVolume(Int(localVolume)) }
-                            }
-                        }
-                    )
-                    Image(systemName: "speaker.wave.3.fill")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .onAppear { localVolume = Double(sonos.volume) }
-        .onChange(of: sonos.volume) { _, newValue in
-            // Don't fight the user mid-drag.
-            if !dragging { localVolume = Double(newValue) }
-        }
-        .onChange(of: localVolume) { _, newValue in
-            guard dragging else { return }
-            // Throttle: cancel any in-flight send, schedule a new one ~50ms
-            // out. The Sonos handles ~20 req/sec fine.
-            pendingSend?.cancel()
-            pendingSend = Task {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                if !Task.isCancelled {
-                    await sonos.setVolume(Int(newValue))
-                }
-            }
-        }
-    }
-}
-
-// MARK: - System card (zones / satellites)
+// MARK: - System card (zones + per-zone volume)
 
 private struct SystemCard: View {
     @ObservedObject var sonos: SonosManager
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text("System")
                     .font(.subheadline.weight(.medium))
-                    .padding(.bottom, 2)
+                    .padding(.bottom, 8)
 
                 if let primary = sonos.primary {
-                    ZoneRow(
-                        device: primary,
-                        isPrimary: true,
-                        isOn: true,
-                        toggle: {}
-                    )
+                    ZoneRow(sonos: sonos, device: primary, isPrimary: true)
                 } else {
                     Text("No zones discovered yet")
                         .font(.caption)
@@ -403,12 +353,8 @@ private struct SystemCard: View {
                 }
 
                 ForEach(sonos.satellites) { device in
-                    ZoneRow(
-                        device: device,
-                        isPrimary: false,
-                        isOn: sonos.isGrouped(device),
-                        toggle: { Task { await sonos.toggleSatellite(device) } }
-                    )
+                    Divider().padding(.vertical, 8)
+                    ZoneRow(sonos: sonos, device: device, isPrimary: false)
                 }
             }
         }
@@ -416,44 +362,103 @@ private struct SystemCard: View {
 }
 
 private struct ZoneRow: View {
+    @ObservedObject var sonos: SonosManager
     let device: SonosDevice
     let isPrimary: Bool
-    let isOn: Bool
-    let toggle: () -> Void
+
+    private var isActive: Bool { isPrimary || sonos.isGrouped(device) }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: device.isPortable ? "hifispeaker" : "hifispeaker.2")
-                .frame(width: 24, height: 24)
-                .foregroundStyle(isPrimary || isOn ? Color.accentColor : .secondary)
-                .background(
-                    Circle()
-                        .fill((isPrimary || isOn) ? Color.accentColor.opacity(0.15) : Color.clear)
-                        .frame(width: 28, height: 28)
-                )
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: device.isPortable ? "hifispeaker" : "hifispeaker.2")
+                    .frame(width: 24, height: 24)
+                    .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    .background(
+                        Circle()
+                            .fill(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+                            .frame(width: 28, height: 28)
+                    )
 
-            Text(device.zoneName)
-                .font(.body)
+                Text(device.zoneName)
+                    .font(.body)
 
-            Spacer()
+                Spacer()
 
-            if isPrimary {
-                Text("Primary")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
-            } else {
-                Toggle("", isOn: Binding(get: { isOn }, set: { _ in toggle() }))
+                if isPrimary {
+                    Text("Primary")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                } else {
+                    Toggle("", isOn: Binding(
+                        get: { sonos.isGrouped(device) },
+                        set: { _ in Task { await sonos.toggleSatellite(device) } }
+                    ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
+                }
+            }
+
+            // Per-zone volume slider — only for zones that are actually
+            // playing (primary, or a satellite grouped with it).
+            if isActive {
+                ZoneVolumeSlider(sonos: sonos, device: device)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if !isPrimary { toggle() }
+    }
+}
+
+private struct ZoneVolumeSlider: View {
+    @ObservedObject var sonos: SonosManager
+    let device: SonosDevice
+    @State private var localVolume: Double = 0
+    @State private var dragging = false
+    @State private var pendingSend: Task<Void, Never>?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "speaker.fill")
+                .foregroundStyle(.secondary)
+                .imageScale(.small)
+            Slider(
+                value: $localVolume,
+                in: 0...100,
+                onEditingChanged: { editing in
+                    dragging = editing
+                    if !editing {
+                        pendingSend?.cancel()
+                        Task { await sonos.setZoneVolume(device, Int(localVolume)) }
+                    }
+                }
+            )
+            Image(systemName: "speaker.wave.3.fill")
+                .foregroundStyle(.secondary)
+                .imageScale(.small)
+            Text("\(Int(localVolume))%")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(width: 34, alignment: .trailing)
+        }
+        .onAppear { localVolume = Double(sonos.volume(for: device)) }
+        .onChange(of: sonos.volume(for: device)) { _, newValue in
+            if !dragging { localVolume = Double(newValue) }
+        }
+        .onChange(of: localVolume) { _, newValue in
+            guard dragging else { return }
+            // Throttle live drags — cancel any in-flight send, schedule a new
+            // one ~50ms out. Sonos handles ~20 req/sec fine.
+            pendingSend?.cancel()
+            pendingSend = Task {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                if !Task.isCancelled {
+                    await sonos.setZoneVolume(device, Int(newValue))
+                }
+            }
         }
     }
 }
@@ -601,6 +606,143 @@ private struct FavoritesPopover: View {
     }
 }
 
+// MARK: - Lyrics panel (inline, persistent)
+
+private struct LyricsCard: View {
+    @ObservedObject var sonos: SonosManager
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("Lyrics")
+                        .font(.subheadline.weight(.medium))
+                    if let source = lyricsSource {
+                        Text(source.badgeName)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                            .help("Lyrics from \(source.badgeName)")
+                    }
+                    Spacer()
+                    Button {
+                        sonos.fetchLyrics(force: true)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .imageScale(.small)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Reload lyrics")
+                }
+
+                // Fixed-height box: lyrics scroll within it, and the panel
+                // height stays constant as the song changes or lyrics load.
+                Group {
+                    if let text = lyricsText {
+                        ScrollView {
+                            Text(text)
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        // Loading / placeholder states are centered in the box.
+                        placeholderContent
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(height: 240)
+            }
+        }
+        .onChange(of: "\(sonos.nowPlaying.artist)|\(sonos.nowPlaying.displayTitle)", initial: true) {
+            // Trigger when the panel appears and whenever the song changes
+            // while it's visible. The fetch itself runs on a manager-owned
+            // task, so it survives the menu closing. Keyed on artist+title
+            // (not trackURI) so it refires for radio, where the stream URI
+            // stays constant across songs.
+            sonos.fetchLyrics()
+        }
+    }
+
+    /// The actual lyrics text to display, or nil if we're in a loading /
+    /// placeholder state (which gets centered instead of scrolled).
+    private var lyricsText: String? {
+        if case .loaded(let lyrics) = sonos.lyricsState, !lyrics.instrumental,
+           let text = lyrics.plain ?? lyrics.synced {
+            return Self.stripTimestamps(text)
+        }
+        return nil
+    }
+
+    /// Source of the currently-shown lyrics, for the header badge. Only set
+    /// once real lyrics are loaded.
+    private var lyricsSource: LyricsProvider? {
+        if case .loaded(let lyrics) = sonos.lyricsState, !lyrics.instrumental,
+           (lyrics.plain ?? lyrics.synced) != nil {
+            return lyrics.source
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var placeholderContent: some View {
+        switch sonos.lyricsState {
+        case .idle, .loading:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Finding lyrics…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        case .loaded(let lyrics):
+            // Only reached when instrumental or no usable text.
+            if lyrics.instrumental {
+                placeholder("This track is instrumental.", icon: "music.note")
+            } else {
+                placeholder("No lyrics available for this track.", icon: "text.quote")
+            }
+        case .notFound:
+            placeholder("No lyrics found for this track.", icon: "text.quote")
+        case .noSong:
+            placeholder("Waiting for a song…", icon: "dot.radiowaves.left.and.right")
+        case .failed(let message):
+            placeholder(message, icon: "exclamationmark.triangle")
+        }
+    }
+
+    private func placeholder(_ text: String, icon: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(.tertiary)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    /// Remove LRC timestamp tags like `[00:24.56]` or `[01:00]` from a line of
+    /// text. Some LRCLIB entries put synced text in the "plain" field, so we
+    /// always run this. Section markers like `[Chorus]` are preserved because
+    /// the pattern only matches numeric `mm:ss(.xx)` tags.
+    static func stripTimestamps(_ text: String) -> String {
+        let pattern = "\\[\\d{1,2}:\\d{2}(?:[.:]\\d{1,3})?\\]"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                let s = String(line)
+                let range = NSRange(s.startIndex..<s.endIndex, in: s)
+                let cleaned = regex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
+                return cleaned.trimmingCharacters(in: .whitespaces)
+            }
+            .joined(separator: "\n")
+    }
+}
+
 // MARK: - Track detail popover (full-size art + open in Music)
 
 private struct TrackDetailPopover: View {
@@ -660,9 +802,12 @@ private struct TrackDetailPopover: View {
 /// TimelineView — no Combine timer plumbing required.
 private struct FreshnessIndicator: View {
     @ObservedObject var sonos: SonosManager
+    /// Fixed anchor for the periodic schedule, captured once. Using `.now`
+    /// inline would rebuild the timeline schedule on every render.
+    @State private var anchor = Date()
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.periodic(from: anchor, by: 1)) { context in
             if let last = sonos.lastPolledAt {
                 let age = Int(context.date.timeIntervalSince(last))
                 if age >= 4 {

@@ -73,6 +73,36 @@ struct NowPlaying: Equatable {
         }
         return album
     }
+
+    /// Whether this looks like an actual song vs. an "intermediate" radio
+    /// state (DJ talking, station promo, between tracks). Used to gate history
+    /// recording and lyrics lookups.
+    ///
+    /// Heuristics tuned for SiriusXM, which during non-song segments reports
+    /// the station's social handle ("@SiriusXMU") as the artist and the
+    /// channel name as the title.
+    var isLikelySong: Bool {
+        let t = displayTitle.trimmingCharacters(in: .whitespaces)
+        let a = artist.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, !a.isEmpty else { return false }
+
+        // SiriusXM uses an "@handle" for station/show promos, never for a
+        // real track's artist.
+        if a.hasPrefix("@") { return false }
+
+        if isRadioStream {
+            // `title` holds the station/channel name for radio. If the "song"
+            // title or artist is really just the station identity, this is a
+            // between-songs / talk segment, not a track.
+            let station = title.trimmingCharacters(in: .whitespaces)
+            if !station.isEmpty {
+                if station.localizedCaseInsensitiveContains(t) { return false }
+                if t.localizedCaseInsensitiveContains(station) { return false }
+                if station.localizedCaseInsensitiveContains(a) { return false }
+            }
+        }
+        return true
+    }
 }
 
 enum TransportState: String, Equatable {

@@ -15,6 +15,7 @@ struct SettingsView: View {
             switch selection.selected {
             case .general:   GeneralSettingsTab(sonos: sonos)
             case .shortcuts: ShortcutsSettingsTab(hotkeys: hotkeys)
+            case .lyrics:    LyricsSettingsTab()
             case .updates:   UpdatesSettingsTab(updater: updater)
             case .about:     AboutSettingsTab()
             }
@@ -215,6 +216,79 @@ private struct KeyCapturePopover: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(14)
+    }
+}
+
+// MARK: - Lyrics
+
+private struct LyricsSettingsTab: View {
+    @AppStorage(LyricsService.providerDefaultsKey) private var providerRaw = LyricsProvider.lrclib.rawValue
+    @AppStorage(LyricsService.geminiKeyDefaultsKey) private var geminiKey = ""
+    @AppStorage(LyricsService.exaKeyDefaultsKey) private var exaKey = ""
+
+    private var provider: LyricsProvider {
+        LyricsProvider(rawValue: providerRaw) ?? .lrclib
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Lyrics Source", selection: $providerRaw) {
+                    ForEach(LyricsProvider.allCases) { p in
+                        Text(p.displayName).tag(p.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+            } footer: {
+                Text(sourceFooter)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if provider == .gemini {
+                Section {
+                    SecureField("Gemini API Key", text: $geminiKey)
+                        .textFieldStyle(.roundedBorder)
+                    Link("Get a free API key at aistudio.google.com",
+                         destination: URL(string: "https://aistudio.google.com/apikey")!)
+                        .font(.caption)
+                } header: {
+                    Text("Google Gemini")
+                } footer: {
+                    Text("Your key is stored locally and only ever sent to Google's API. Gemini Flash Lite is extremely cheap — lyric lookups cost a fraction of a cent.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if provider == .exa {
+                Section {
+                    SecureField("Exa API Key", text: $exaKey)
+                        .textFieldStyle(.roundedBorder)
+                    Link("Get an API key at dashboard.exa.ai",
+                         destination: URL(string: "https://dashboard.exa.ai/api-keys")!)
+                        .font(.caption)
+                } header: {
+                    Text("Exa")
+                } footer: {
+                    Text("Your key is stored locally and only ever sent to Exa's API. Exa's search-and-extract is the most reliable for obscure / indie tracks, at about half a cent per lookup. Falls back to LRCLIB if a request fails.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var sourceFooter: String {
+        switch provider {
+        case .lrclib:
+            return "LRCLIB is a free, open lyrics database. No account needed."
+        case .gemini:
+            return "Gemini Flash Lite, grounded by Google Search, finds lyrics for most tracks. Falls back to LRCLIB if a request fails."
+        case .exa:
+            return "Exa search-and-extract is the most reliable for obscure / indie tracks. Falls back to LRCLIB if a request fails."
+        }
     }
 }
 

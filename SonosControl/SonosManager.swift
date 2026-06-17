@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import Combine
+import Network
+import AppKit
 
 /// Central state + control for the Sonos system.
 ///
@@ -35,7 +37,9 @@ class SonosManager: ObservableObject {
     @Published private(set) var devices: [SonosDevice] = []
     @Published private(set) var groups: [SonosGroup] = []
     @Published private(set) var nowPlaying: NowPlaying = .empty
-    @Published private(set) var volume: Int = 30
+    /// Per-device volume (0–100), keyed by device UUID. Each zone has its own
+    /// volume — we control devices individually rather than via group volume.
+    @Published private(set) var zoneVolumes: [String: Int] = [:]
     @Published private(set) var history: [HistoryEntry] = []
     @Published private(set) var favorites: [SonosFavorite] = []
     @Published private(set) var isDiscovering: Bool = false
@@ -54,6 +58,9 @@ class SonosManager: ObservableObject {
     /// home network or the speakers are unreachable. Drives the menu bar
     /// icon's grey "offline" state.
     @Published private(set) var isOffline: Bool = false
+
+    /// Lyrics for the currently-playing track, fetched on demand from LRCLIB.
+    @Published private(set) var lyricsState: LyricsState = .idle
 
     var isPlaying: Bool { nowPlaying.transportState.isPlaying }
 
@@ -99,6 +106,27 @@ class SonosManager: ObservableObject {
     private let backgroundInterval: TimeInterval = 10.0
     private let historyLimit = 10
 
+    // Re-discovery / self-healing. Discovery is no longer a one-shot at launch:
+    // the network changes (laptop sleeps, moves between networks, DHCP
+    // reassigns Sonos IPs), so we re-run SSDP when things look broken.
+    private var pathMonitor: NWPathMonitor?
+    private var isDiscoveryRunning = false
+    private var lastDiscoveryAttempt: Date?
+    /// Don't re-run SSDP more often than this while polling is failing —
+    /// a stale-cached-device probe costs a 5s timeout, so we throttle.
+    private let rediscoverCooldown: TimeInterval = 25
+    /// Floor applied even to "forced" rediscovery (wake / network change), to
+    /// collapse the duplicate events macOS fires during a single transition.
+    private let forcedRediscoverFloor: TimeInterval = 5
+
+    private let lyricsService = LyricsService()
+    /// "artist|title" of the track lyrics were last fetched for — lets us skip
+    /// redundant refetches and invalidate when the song changes.
+    private var lyricsTrackKey: String?
+    /// Manager-owned fetch task so an in-flight lyrics lookup survives the
+    /// menu closing (it's not tied to the view's lifetime).
+    private var lyricsTask: Task<Void, Never>?
+
     /// Set an error message that fades on its own after a few seconds. Pass
     /// `nil` to clear immediately.
     private func showError(_ message: String?) {
@@ -124,6 +152,21 @@ class SonosManager: ObservableObject {
             startBackgroundPolling()
         }
 
+        startNetworkMonitoring()
+
+        // Re-discover when the Mac wakes — IPs may have shifted while asleep,
+        // or we may have moved networks.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                logInfo("System woke — triggering Sonos rediscovery")
+                await self?.maybeRediscover(force: true)
+            }
+        }
+
         // Subscribe to every hotkey action — both global (Carbon) and in-app
         // (local NSEvent monitor) bindings post the same notifications.
         let nc = NotificationCenter.default
@@ -135,14 +178,14 @@ class SonosManager: ObservableObject {
         }
         nc.addObserver(forName: HotkeyAction.inAppVolumeUp.notificationName, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.setVolume(min(100, self.volume + 2))
+                guard let self, let primary = self.primary else { return }
+                await self.setZoneVolume(primary, self.volume(for: primary) + 2)
             }
         }
         nc.addObserver(forName: HotkeyAction.inAppVolumeDown.notificationName, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.setVolume(max(0, self.volume - 2))
+                guard let self, let primary = self.primary else { return }
+                await self.setZoneVolume(primary, self.volume(for: primary) - 2)
             }
         }
     }
@@ -150,14 +193,56 @@ class SonosManager: ObservableObject {
     deinit {
         pollTask?.cancel()
         errorClearTask?.cancel()
+        pathMonitor?.cancel()
+        lyricsTask?.cancel()
+    }
+
+    // MARK: - Network monitoring
+
+    /// Watch for network path changes. When the path becomes satisfied (e.g.
+    /// rejoined home Wi-Fi after being away), force a rediscovery so we find
+    /// the speakers at their current IPs without waiting for a poll tick.
+    private func startNetworkMonitoring() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if path.status == .satisfied {
+                    logInfo("Network path satisfied — triggering Sonos rediscovery")
+                    await self.maybeRediscover(force: true)
+                }
+            }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        self.pathMonitor = monitor
+    }
+
+    /// Re-run discovery, throttled. `force` (wake / network change) bypasses
+    /// the normal cooldown but still honors a short floor to collapse the
+    /// duplicate events macOS emits during a single transition.
+    private func maybeRediscover(force: Bool = false) async {
+        let cooldown = force ? forcedRediscoverFloor : rediscoverCooldown
+        if let last = lastDiscoveryAttempt,
+           Date().timeIntervalSince(last) < cooldown {
+            return
+        }
+        await refreshTopology()
     }
 
     // MARK: - Discovery & topology
 
     /// Discover Sonos devices on the LAN and load the zone topology.
     func refreshTopology() async {
+        // Guard against concurrent discoveries — wake, network change, the poll
+        // loop, and manual refresh can all fire at once.
+        guard !isDiscoveryRunning else { return }
+        isDiscoveryRunning = true
         isDiscovering = true
-        defer { isDiscovering = false }
+        lastDiscoveryAttempt = Date()
+        defer {
+            isDiscovering = false
+            isDiscoveryRunning = false
+        }
 
         // Use any cached device first (faster than re-running SSDP every time).
         if let any = devices.first {
@@ -203,7 +288,7 @@ class SonosManager: ObservableObject {
             }
             // Pull initial state from the primary coordinator (if it exists).
             await refreshNowPlaying()
-            await refreshVolume()
+            await refreshVolumes()
             // Warm the favorites cache so the popover opens populated.
             if favorites.isEmpty {
                 await fetchFavorites()
@@ -226,15 +311,32 @@ class SonosManager: ObservableObject {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshNowPlaying()
-                if self?.isMenuVisible == true {
-                    await self?.refreshVolume()
-                }
+                await self?.pollTick()
                 let interval = self?.isMenuVisible == true
                     ? self?.foregroundInterval ?? 3.0
                     : self?.backgroundInterval ?? 10.0
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
+        }
+    }
+
+    /// One poll iteration. Self-heals: if we have no devices, or polling has
+    /// been failing (stale IPs after a network change), re-run discovery
+    /// instead of forever polling a dead coordinator.
+    private func pollTick() async {
+        if devices.isEmpty {
+            // Never discovered, or lost everything. Keep trying (throttled).
+            await maybeRediscover()
+            return
+        }
+        await refreshNowPlaying()
+        if isMenuVisible {
+            await refreshVolumes()
+        }
+        if consecutiveFailures >= offlineThreshold {
+            // Cached coordinator isn't answering — its IP may have changed.
+            // Re-discover to pick up the new address.
+            await maybeRediscover()
         }
     }
 
@@ -244,7 +346,7 @@ class SonosManager: ObservableObject {
         isMenuVisible = true
         Task {
             await refreshNowPlaying()
-            await refreshVolume()
+            await refreshVolumes()
         }
     }
 
@@ -259,17 +361,24 @@ class SonosManager: ObservableObject {
         do {
             let np = try await SonosClient(device: coordinator).getPositionInfo()
             let previousURI = self.nowPlaying.trackURI
-            self.nowPlaying = np
+            let previousArtist = self.nowPlaying.artist
+            let previousTitle = self.nowPlaying.displayTitle
+            // Only reassign when something actually changed — avoids needless
+            // @Published churn (and window re-layout) every poll, especially
+            // for radio where the snapshot is identical between polls.
+            if self.nowPlaying != np {
+                self.nowPlaying = np
+            }
             self.hasLoadedState = true
             self.lastPolledAt = Date()
             self.consecutiveFailures = 0
             if self.isOffline { self.isOffline = false }
-            // Only add to history if this looks like a real track:
-            //   - we have an artist (rules out station-name placeholders)
-            //   - title is non-empty
-            //   - trackURI changed (debounces same-song re-polls)
-            let looksLikeRealSong = !np.artist.isEmpty && !np.displayTitle.isEmpty
-            if looksLikeRealSong && np.trackURI != previousURI {
+            // Only add to history if this looks like a real track (filters
+            // DJ-talk / station-promo states), and the song actually changed.
+            // For radio the trackURI is constant, so compare on title+artist.
+            let songChanged = np.trackURI != previousURI
+                || "\(np.artist)|\(np.displayTitle)" != "\(previousArtist)|\(previousTitle)"
+            if np.isLikelySong && songChanged {
                 addToHistory(np)
             }
         } catch {
@@ -282,18 +391,26 @@ class SonosManager: ObservableObject {
         }
     }
 
-    func refreshVolume() async {
-        guard let coordinator = currentCoordinator() else { return }
-        do {
-            let client = SonosClient(device: coordinator)
-            // If grouped with satellites, group volume; otherwise plain volume.
-            let groupedCount = currentGroup()?.memberUUIDs.count ?? 1
-            let v = groupedCount > 1
-                ? try await client.getGroupVolume()
-                : try await client.getVolume()
-            self.volume = v
-        } catch {
-            logDebug("refreshVolume: \(error)")
+    /// Current volume for a device (0 if unknown yet).
+    func volume(for device: SonosDevice) -> Int {
+        zoneVolumes[device.uuid] ?? 0
+    }
+
+    /// Devices we show a volume slider for: the primary, plus any satellite
+    /// currently grouped with it (the inactive ones aren't playing).
+    private var volumeTargets: [SonosDevice] {
+        var targets: [SonosDevice] = []
+        if let primary { targets.append(primary) }
+        for sat in satellites where isGrouped(sat) { targets.append(sat) }
+        return targets
+    }
+
+    /// Poll each active zone's individual volume (per-device, not group).
+    func refreshVolumes() async {
+        for device in volumeTargets {
+            if let v = try? await SonosClient(device: device).getVolume() {
+                zoneVolumes[device.uuid] = v
+            }
         }
     }
 
@@ -328,20 +445,14 @@ class SonosManager: ObservableObject {
         await refreshNowPlaying()
     }
 
-    /// Set volume on the primary zone (group volume if grouped).
-    func setVolume(_ value: Int) async {
-        guard let coordinator = currentCoordinator() else { return }
-        self.volume = value
+    /// Set the volume for a single zone (device).
+    func setZoneVolume(_ device: SonosDevice, _ value: Int) async {
+        let clamped = max(0, min(100, value))
+        zoneVolumes[device.uuid] = clamped
         do {
-            let client = SonosClient(device: coordinator)
-            let groupedCount = currentGroup()?.memberUUIDs.count ?? 1
-            if groupedCount > 1 {
-                try await client.setGroupVolume(value)
-            } else {
-                try await client.setVolume(value)
-            }
+            try await SonosClient(device: device).setVolume(clamped)
         } catch {
-            logError("setVolume(\(value)): \(error)")
+            logError("setZoneVolume(\(device.zoneName), \(clamped)): \(error)")
         }
     }
 
@@ -395,6 +506,78 @@ class SonosManager: ObservableObject {
         saveHistory()
     }
 
+    // MARK: - Lyrics
+
+    /// Current track's lyrics key, or nil if there's no real song playing
+    /// (e.g. DJ talking, station promo, between tracks).
+    private var currentLyricsKey: String? {
+        guard nowPlaying.isLikelySong else { return nil }
+        let title = nowPlaying.displayTitle.trimmingCharacters(in: .whitespaces)
+        return "\(nowPlaying.artist.lowercased())|\(title.lowercased())"
+    }
+
+    /// Trigger a lyrics fetch for whatever's playing now. The actual network
+    /// work runs in a `SonosManager`-owned Task (not the view's), so closing
+    /// the menu mid-fetch does NOT cancel it — it completes in the background
+    /// and the result is ready next time the panel is shown.
+    ///
+    /// No-op if we already have lyrics for this song, or a fetch for it is
+    /// already in flight (unless `force`).
+    func fetchLyrics(force: Bool = false) {
+        guard let key = currentLyricsKey else {
+            lyricsTask?.cancel()
+            lyricsTask = nil
+            lyricsTrackKey = nil
+            lyricsState = .noSong
+            return
+        }
+        if !force {
+            // Already have these lyrics.
+            if key == lyricsTrackKey, case .loaded = lyricsState { return }
+            // A fetch for this exact song is already running — let it finish.
+            if key == lyricsTrackKey, lyricsTask != nil { return }
+        }
+
+        lyricsTask?.cancel()
+        lyricsTrackKey = key
+        lyricsState = .loading
+
+        let title = nowPlaying.displayTitle
+        let artist = nowPlaying.artist
+        let album = nowPlaying.album
+        let duration = nowPlaying.duration
+        logInfo("Fetching lyrics: \(artist) – \(title) (force=\(force))")
+
+        lyricsTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.lyricsTask = nil }
+            do {
+                let lyrics = try await self.lyricsService.fetch(
+                    artist: artist, title: title, album: album, duration: duration
+                )
+                // The song may have changed while we were fetching — only
+                // apply if this is still the current track.
+                guard key == self.currentLyricsKey else { return }
+                if let lyrics {
+                    let chars = (lyrics.plain ?? lyrics.synced ?? "").count
+                    logInfo("Lyrics loaded for \(title) (\(chars) chars, instrumental=\(lyrics.instrumental))")
+                    self.lyricsState = .loaded(lyrics)
+                } else {
+                    logInfo("No lyrics found for \(title)")
+                    self.lyricsState = .notFound
+                }
+            } catch is CancellationError {
+                // Superseded by a newer fetch — leave state to that one.
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                // Same.
+            } catch {
+                logDebug("fetchLyrics: \(error)")
+                guard key == self.currentLyricsKey else { return }
+                self.lyricsState = .failed("Couldn't load lyrics")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// Returns the device that's actually the coordinator of the primary zone's
@@ -406,11 +589,6 @@ class SonosManager: ObservableObject {
             return devices.first { $0.uuid == group.coordinatorUUID } ?? primary
         }
         return primary
-    }
-
-    private func currentGroup() -> SonosGroup? {
-        guard let primary else { return nil }
-        return groups.first { $0.memberUUIDs.contains(primary.uuid) }
     }
 
     private func addToHistory(_ np: NowPlaying) {
