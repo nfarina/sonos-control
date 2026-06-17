@@ -3,6 +3,27 @@
     <channel>
         <title>SonosControl</title>
         <item>
+            <title>1.1.0</title>
+            <pubDate>Wed, 17 Jun 2026 11:52:19 -0700</pubDate>
+            <link>https://nfarina.github.io/sonos-control</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/nfarina/sonos-control/releases/tag/v1.1.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.4</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## What's new in 1.1.0
+
+- **Settings window** — pick your primary zone, show/hide zones, and configure everything below.
+- **Per-zone volume** — each active zone gets its own slider, folded into the System panel.
+- **Lyrics panel** — fetches lyrics for the current song. Choose your source: LRCLIB (free), Google Gemini, or Exa (both via your own API key).
+- **Recently played** — the last 10 songs, even captured while the menu was closed. Click any to open it in Apple Music.
+- **Customizable shortcuts** — rebind the in-menu shortcuts and the global play/pause hotkey (default F8).
+- **Auto-updates** via Sparkle.
+- **Self-healing connection** — automatically reconnects after sleep or switching networks, instead of getting stuck.
+]]></description>
+            <enclosure url="https://github.com/nfarina/sonos-control/releases/download/v1.1.0/SonosControl-1.1.0-macos.zip" length="2195461" type="application/octet-stream" sparkle:edSignature="Jr/+1RR35kq9FttbqMOa3f3nST/DiHUXRC0AOsOpC1N25gbyPiGcZKdfm8POciPX2Mrtlbr6Fw31Bwdw5p8KDw=="/>
+        </item>
+        <item>
             <title>1.0.0</title>
             <pubDate>Mon, 18 May 2026 08:05:04 -0700</pubDate>
             <link>https://nfarina.github.io/sonos-control</link>
